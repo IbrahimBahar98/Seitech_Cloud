@@ -1,0 +1,89 @@
+SEITECH G7M MULTI DEVICES PAYLOAD
+
+1. Architecture
+1.1. Multi-Device Systems
+- Inverters (1-5)
+- FlowMeters (1-2)
+- EnergyMeters (1-5)
+
+Device Details:
+Each device type has its own identity.
+Inverters: Inverter_1, Inverter_2, ...
+FlowMeters: FlowMeter_1, FlowMeter_2
+EnergyMeters: EnergyMeter_1, EnergyMeter_2, ...
+
+2. Device Telemetries (Inverter)
+Keys:
+- frequency (Hz)
+- pump_voltage (V)
+- pump_current (A)
+- pump_power (kW)
+- bus_voltage (V)
+- inverter_temperature (C)
+- motor_speed (RPM)
+- inverter_direction
+- pump_status
+- inverter_status
+- inverter_supply_source
+- StartCommandMode
+- totalWaterVolume_m3
+- water_pumped_flow_rate_per_hour
+- total_energy
+- energy_per_day
+- daily_solar_consumption
+- daily_nonsolar_consumption
+- pump_energy_consumption
+- hourly_solar_consumption
+- hourly_nonsolar_consumption
+- accumulated_solar_consumption
+- accumulated_nonsolar_consumption
+- TotalCO2Mitigated
+- money_saved
+
+Payload Structure:
+{
+ "DeviceName": "Inverter_1",
+ "data": {
+   "frequency": {"id": "0x1001", "value": "50.00"},
+   "pump_power": {"id": "0x1004", "value": "8.75"},
+   ...
+ }
+}
+
+3. FlowMeter Telemetry
+Keys:
+- water_pumped_flow_rate_per_hour (m3/h)
+- totalWaterVolume_m3 (m3)
+- flowmeter_conductivity (uS/cm)
+
+Payload Structure:
+{
+ "DeviceName": "FlowMeter_1",
+ "data": {
+   "totalWaterVolume_m3": {"id":"0x0304","value":"1077936128.00"},
+   ...
+ }
+}
+
+4. EnergyMeter Telemetry
+Keys: em_voltage_a, em_voltage_b, em_voltage_c, em_current_a, ..., em_energy_total, etc.
+
+5. Alarms
+Payload:
+{
+ "DeviceName": "Inverter_1",
+ "type": "temperature",
+ "title": "Pre-Alarm Inverter temperature is rising",
+ "status": 1,
+ "severity": 3,
+ "propagate": true
+}
+
+6. Events
+Payload:
+{
+ "DeviceName": "Inverter_1",
+ "type": "Inverter_input_source",
+ "title": "The inverter's input source is Diesel",
+ "propagate": true
+}

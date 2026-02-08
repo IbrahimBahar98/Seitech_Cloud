@@ -2,7 +2,8 @@
 
 import React, { useState, useMemo } from 'react';
 import { AlertTriangle, Info, XCircle, Filter } from 'lucide-react';
-import { useMQTT, AlertData } from '@/lib/mqtt-context';
+import { db } from '@/lib/db';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -12,30 +13,52 @@ interface AlertLoggerProps {
 }
 
 export const AlertLogger = ({ deviceName, filterType = 'All' }: AlertLoggerProps) => {
-    const { alerts } = useMQTT();
+    // Live Query from DB
+    const alerts = useLiveQuery(
+        () => db.alarms
+            .reverse() // Newest first
+            .limit(100)
+            .toArray(),
+        []
+    ) || [];
+
+    // DEBUG: Trace Alarms
+    // console.log('[AlertLogger] Alerts from DB:', alerts);
+
     const [activeTab, setActiveTab] = useState<string>("All");
 
-    // Extract unique device names for tabs - Only if deviceName is NOT provided
+    // Extract unique device names for tabs
     const deviceTabs = useMemo(() => {
         if (deviceName) return [];
-        const devices = new Set(alerts.map(a => a.DeviceName));
+        // Extract from DB records (stored in 'data' field or top level depending on how we saved it)
+        // In mqtt-context we saved { deviceName, ..., data: alertObject }
+        // Let's assume we map it back to a flat structure for display
+        const devices = new Set(alerts.map(a => a.deviceName));
         return ["All", ...Array.from(devices).sort()];
     }, [alerts, deviceName]);
 
-    // Filter alerts based on active tab AND props
+    // Filter alerts
     const filteredAlerts = useMemo(() => {
-        let result = alerts;
+        let result = alerts.map(a => ({ ...a.data, timestamp: a.timestamp })); // Flatten for display
 
-        // 1. Filter by Prop (if provided, ignore internal tab state for device)
         if (deviceName) {
             result = result.filter(a => a.DeviceName === deviceName);
         } else if (activeTab !== "All") {
             result = result.filter(a => a.DeviceName === activeTab);
         }
 
-        // 2. Filter by Type
         if (filterType !== 'All') {
-            result = result.filter(a => a.type === filterType); // Assuming payload 'type' matches 'Alarm'/'Event' case roughly
+            result = result.filter(a => {
+                // Use category if available, otherwise fallback to rough type string match or assume Alarm if invalid
+                if (a.category) return a.category === filterType;
+
+                // Fallback for old data:
+                // Events usually have 'Event' in type or are specific. Alarms usually have 'Alarm' or 'Fault'
+                // But simplified: if we are asking for Events, check if type includes 'Event'
+                if (filterType === 'Event') return a.type?.toLowerCase().includes('event');
+                if (filterType === 'Alarm') return !a.type?.toLowerCase().includes('event');
+                return true;
+            });
         }
 
         return result;

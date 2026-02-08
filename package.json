@@ -6,10 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "log-data": "node scripts/mqtt-logger.js",
+    "track-devices": "node scripts/mqtt-device-state.js"
   },
   "dependencies": {
     "clsx": "^2.1.0",
+    "dexie": "^4.3.0",
+    "dexie-react-hooks": "^4.2.0",
     "lucide-react": "^0.344.0",
     "mqtt": "^5.3.5",
     "next": "14.1.3",

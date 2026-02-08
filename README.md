@@ -14,6 +14,53 @@ npm run dev
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
 ---
+## System Architecture
+
+The Seitech Cloud Dashboard uses a **client-side centric architecture** designed for real-time responsiveness and offline resilience.
+
+### Architecture Diagram
+```mermaid
+graph TD
+    subgraph Edge Devices
+        D1[Inverters]
+        D2[Flow Meters]
+        D3[Energy Meters]
+    end
+
+    subgraph Cloud Infra
+        B[MQTT Broker (EMQX)]
+    end
+
+    subgraph Client Application (Browser)
+        M[MQTT Client (MQTT.js)]
+        S[React State (Live Data)]
+        DB[(IndexedDB / Dexie.js)]
+        UI[Dashboard UI]
+    end
+
+    D1 -->|JSON Telemetry| B
+    D2 -->|JSON Telemetry| B
+    D3 -->|JSON Telemetry| B
+    
+    B -->|WSS (WebSockets)| M
+    M -->|Real-time Update| S
+    M -->|Persist History| DB
+    
+    S -->|Render| UI
+    DB -->|Load History| UI
+```
+
+### Key Components
+
+1.  **MQTT Broker (EMQX)**: Acts as the central hub. Devices publish telemetry here, and the dashboard subscribes to receive updates via WebSockets.
+2.  **Next.js Frontend**: The application shell, rendered in the browser.
+3.  **Local Database (Dexie.js / IndexedDB)**: 
+    *   **Location**: Completely **Client-Side** (in your browser).
+    *   **Purpose**: Stores telemetry history and alarms locally on the user's device. This allows for historical graphing and data review without needing a heavy backend database.
+    *   **Persistence**: Data persists even if you refresh the page, but is specific to the browser instance.
+4.  **React Context (MQTTContext)**: Manages the live connection, handles real-time state updates (optimistic UI), and coordinates saving data to the local DB in the background.
+
+---
 
 # Device Integration Guide
 

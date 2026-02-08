@@ -7,7 +7,9 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { clsx } from 'clsx';
 import { AlertLogger } from './AlertLogger';
 import { useConfig } from '@/lib/config-context';
-import { Table, Terminal, Bell, AlertCircle } from 'lucide-react'; // Added icons
+import { Table, Terminal, Bell, AlertCircle, Send } from 'lucide-react'; // Added icons
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '@/lib/db';
 
 
 interface DeviceDashboardProps {
@@ -20,15 +22,30 @@ interface DeviceDashboardProps {
 
 export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
     const { deviceTypes, getCustomName, renameDevice, addDeviceAttribute, removeDeviceAttribute } = useConfig();
-    const { telemetry } = useMQTT();
+    const { telemetry, publishCommand } = useMQTT();
     const [editMode, setEditMode] = useState(false);
     const [isRenaming, setIsRenaming] = useState(false);
     const [newName, setNewName] = useState("");
 
+    // Command State
+    const [commandPayload, setCommandPayload] = useState('{\n  "method": "start"\n}');
+    const [commandStatus, setCommandStatus] = useState<string | null>(null);
+
+    const handleSendCommand = () => {
+        try {
+            const payload = JSON.parse(commandPayload);
+            publishCommand(mqttDeviceName, payload);
+            setCommandStatus('Command Sent! Check device logs.');
+            setTimeout(() => setCommandStatus(null), 3000);
+        } catch (e) {
+            setCommandStatus('Error: Invalid JSON');
+        }
+    };
+
     // Add Card State
     const [isAddingCard, setIsAddingCard] = useState(false);
     const [newCard, setNewCard] = useState({ key: '', label: '', unit: '', iconStr: 'Activity' });
-    const [activeTab, setActiveTab] = useState<'overview' | 'telemetry' | 'alarms' | 'events'>('overview');
+    const [activeTab, setActiveTab] = useState<'overview' | 'telemetry' | 'alarms' | 'events' | 'controls'>('overview');
 
     const handleAddCard = () => {
         if (newCard.key && newCard.label) {
@@ -61,46 +78,60 @@ export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
 
     // Use prefix for MQTT matching
     const mqttDeviceName = deviceType ? `${deviceType.deviceNamePrefix || deviceType.singularLabel.replace(' ', '')}_${id}` : `${type}_${id}`;
-    const deviceData = telemetry[mqttDeviceName];
 
-    // Mock historical data for graph (in real app, accumulate this in context or fetch from API)
+    // DB Integration: Live Query for History & Graph
+    const history = useLiveQuery(
+        () => db.telemetry
+            .where('deviceName').equals(mqttDeviceName)
+            .reverse() // Newest first
+            .limit(100)
+            .toArray(),
+        [mqttDeviceName]
+    ) || [];
+
+    // Prioritize Live MQTT Data -> Fallback to Latest DB Record
+    const latestHistory = history[0];
+    // Mapped to match TelemetryData structure: { DeviceName, timestamp, data }
+    const deviceData = telemetry[mqttDeviceName] || (latestHistory ? {
+        DeviceName: latestHistory.deviceName,
+        timestamp: latestHistory.timestamp,
+        // Detailed check to extract measurements from stored payload
+        data: latestHistory.data?.data || latestHistory.data
+    } : undefined);
+
+    // DEBUG: Trace why cards aren't updating
+    // console.log(`[Dashboard] Render ${mqttDeviceName}`, { deviceData, timestamp: deviceData?.timestamp, val: deviceData?.data });
+
+    // DB Integration: Live Query for History & Graph
+
+
+    // Derive Graph Data from DB History
     const [graphData, setGraphData] = useState<any[]>([]);
 
     useEffect(() => {
-        if (deviceData) {
-            setGraphData(prev => {
+        if (history.length > 0) {
+            // History is Newest First. Graph needs Oldest First.
+            // Filter INVALID data for Graph
+            const validHistory = history.filter(h => h.isValid);
+            const reversedForGraph = [...validHistory].reverse();
+
+            const newGraph = reversedForGraph.map(item => {
                 let val = 0;
-                if (type === 'inv') val = Number(deviceData.data?.pump_power?.value || 0);
-                else if (type === 'fm') val = Number(deviceData.data?.water_pumped_flow_rate_per_hour?.value || 0);
-                else if (type === 'em') val = Number(deviceData.data?.total_active_power?.value || 0);
+                // Safe access to nested data
+                const d = item.data?.data || item.data;
 
-                const newData = {
-                    time: new Date(deviceData.timestamp).toLocaleTimeString(),
-                    value: val,
-                };
-                const newArr = [...prev, newData];
-                if (newArr.length > 20) newArr.shift();
-                return newArr;
-            });
-        }
-    }, [deviceData, type]);
+                if (type === 'inv') val = Number(d?.pump_power?.value || d?.pump_power || 0);
+                else if (type === 'fm') val = Number(d?.water_pumped_flow_rate_per_hour?.value || d?.water_pumped_flow_rate_per_hour || 0);
+                else if (type === 'em') val = Number(d?.total_active_power?.value || d?.total_active_power || 0);
 
-    // Telemetry History
-    const [history, setHistory] = useState<any[]>([]);
-    useEffect(() => {
-        if (deviceData) {
-            setHistory(prev => {
-                const newItem = {
-                    timestamp: deviceData.timestamp,
-                    data: deviceData.data
+                return {
+                    time: new Date(item.timestamp).toLocaleTimeString(),
+                    value: val
                 };
-                // Keep last 100 entries
-                const newArr = [newItem, ...prev];
-                if (newArr.length > 100) newArr.pop();
-                return newArr;
             });
+            setGraphData(newGraph.slice(-20)); // Keep last 20 points for graph
         }
-    }, [deviceData]);
+    }, [history, type]);
 
     const handleRename = () => {
         if (newName.trim()) {
@@ -257,6 +288,18 @@ export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
                         EVENTS
                     </div>
                 </button>
+                <button
+                    onClick={() => setActiveTab('controls')}
+                    className={clsx(
+                        "pb-4 text-sm font-medium transition-colors relative",
+                        activeTab === 'controls' ? "text-primary border-b-2 border-primary" : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                    )}
+                >
+                    <div className="flex items-center gap-2">
+                        <Send size={16} />
+                        CONTROLS
+                    </div>
+                </button>
             </div>
 
             {/* Tab: Overview */}
@@ -403,14 +446,29 @@ export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
                                     </tr>
                                 ) : (
                                     history.map((item, idx) => (
-                                        <tr key={idx} className="hover:bg-gray-50 dark:hover:bg-white/5">
-                                            <td className="px-6 py-3 font-mono text-gray-400 whitespace-nowrap">
+                                        <tr key={idx} className={clsx(
+                                            "hover:bg-gray-50 dark:hover:bg-white/5 transition-colors",
+                                            !item.isValid && "bg-red-50 dark:bg-red-900/10 border-l-4 border-red-500"
+                                        )}>
+                                            <td className="px-6 py-3 font-mono text-gray-400 whitespace-nowrap align-top">
                                                 {new Date(item.timestamp).toLocaleTimeString()}
+                                                {!item.isValid && (
+                                                    <span className="block text-xs text-red-500 font-bold mt-1">INVALID</span>
+                                                )}
                                             </td>
                                             <td className="px-6 py-3">
-                                                <pre className="text-xs font-mono text-gray-600 dark:text-gray-300 overflow-x-auto max-w-full">
-                                                    {JSON.stringify(item.data, null, 2)}
-                                                </pre>
+                                                {item.isValid ? (
+                                                    <pre className="text-xs font-mono text-gray-600 dark:text-gray-300 overflow-x-auto max-w-full">
+                                                        {JSON.stringify(item.data, null, 2)}
+                                                    </pre>
+                                                ) : (
+                                                    <div className="space-y-1">
+                                                        <div className="text-xs text-red-500 font-semibold">{item.error || 'Unknown Error'}</div>
+                                                        <div className="text-xs font-mono text-gray-500 break-all bg-black/5 dark:bg-white/5 p-1 rounded">
+                                                            {item.rawMessage || JSON.stringify(item.data)}
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </td>
                                         </tr>
                                     ))
@@ -432,6 +490,59 @@ export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
             {activeTab === 'events' && (
                 <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
                     <AlertLogger deviceName={mqttDeviceName} filterType="Event" />
+                </div>
+            )}
+
+            {/* Tab: Controls */}
+            {activeTab === 'controls' && (
+                <div className="animate-in fade-in slide-in-from-bottom-2 duration-500 glass-panel p-6">
+                    <div className="flex items-center gap-3 mb-6">
+                        <div className="p-2 rounded-lg bg-purple-500/10 text-purple-500">
+                            <Send size={20} />
+                        </div>
+                        <div>
+                            <h2 className="text-lg font-semibold text-white">Device Controls</h2>
+                            <p className="text-xs text-gray-500">Send commands directly to {mqttDeviceName}</p>
+                        </div>
+                    </div>
+
+                    <div className="space-y-4 max-w-2xl">
+                        <div className="space-y-2">
+                            <label className="text-xs text-gray-400 ml-1">JSON Payload</label>
+                            <textarea
+                                value={commandPayload}
+                                onChange={(e) => setCommandPayload(e.target.value)}
+                                className="w-full h-40 bg-black/20 border border-white/10 rounded-xl p-4 text-sm font-mono text-gray-300 focus:outline-none focus:border-primary/50 resize-none"
+                                placeholder="{}"
+                            />
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                            <button
+                                onClick={handleSendCommand}
+                                className="px-6 py-2 bg-primary hover:bg-primary/90 text-white rounded-lg flex items-center gap-2 transition-all active:scale-95"
+                            >
+                                <Send size={16} />
+                                Send Command
+                            </button>
+
+                            {commandStatus && (
+                                <span className={clsx(
+                                    "text-sm font-medium animate-in fade-in",
+                                    commandStatus.includes('Error') ? "text-red-400" : "text-green-400"
+                                )}>
+                                    {commandStatus}
+                                </span>
+                            )}
+                        </div>
+
+                        <div className="pt-4 border-t border-white/5">
+                            <p className="text-xs text-gray-500 mb-2">Target Topic:</p>
+                            <code className="text-xs font-mono bg-white/5 px-2 py-1 rounded text-purple-300">
+                                device/{mqttDeviceName}/rpc
+                            </code>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState, ReactNode } from
 import mqtt, { MqttClient } from 'mqtt';
 
 import { useConfig } from './config-context';
+import { db } from './db';
 
 // Types derived from firmware analysis
 export interface TelemetryData {
@@ -26,6 +27,7 @@ export interface AlertData {
     severity: number;
     status: number;
     timestamp: number;
+    category?: 'Alarm' | 'Event';
 }
 
 interface MQTTContextType {
@@ -34,6 +36,7 @@ interface MQTTContextType {
     connectionError: string | null;
     telemetry: Record<string, DeviceTelemetry>; // Keyed by DeviceName
     alerts: AlertData[];
+    publishCommand: (deviceName: string, payload: any) => void;
 }
 
 const MQTTContext = createContext<MQTTContextType | undefined>(undefined);
@@ -59,6 +62,24 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
     const [telemetry, setTelemetry] = useState<Record<string, DeviceTelemetry>>({});
     const [alerts, setAlerts] = useState<AlertData[]>([]);
 
+    // Hydrate state from server-side logs on mount
+    useEffect(() => {
+        const fetchInitialState = async () => {
+            console.log('[MQTT Context] Fetching initial state...');
+            try {
+                const res = await fetch('/api/telemetry');
+                if (res.ok) {
+                    const data = await res.json();
+                    console.log('[MQTT Context] Initial state loaded:', Object.keys(data).length, 'devices');
+                    setTelemetry(prev => ({ ...prev, ...data }));
+                }
+            } catch (error) {
+                console.error('[MQTT Context] Failed to load initial state:', error);
+            }
+        };
+        fetchInitialState();
+    }, []);
+
     useEffect(() => {
         console.log('Connecting to MQTT broker...', brokerUrl);
         const mqttClient = mqtt.connect(brokerUrl, {
@@ -72,38 +93,14 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
             setIsConnected(true);
             setConnectionError(null);
 
-            // Subscribe to topics based on Kuido/Vodafone Platform structure
-            // Structure: /device/{clientID}/{topic_type}
-
-            // Subscribe to topics
-            // We subscribe to multiple patterns to support different device configurations,
-            // including those with leading slashes which are common in some firmware.
             const topics = [
-                // PDF Specification matches: devices/<device_id>/telemetry (Plural)
-                // Alarms/Events in PDF say: device/<device_id>/alarm (Singular)
-                // We subscribe to BOTH and generic wildcards to be safe.
-                'devices/+/telemetry',
-                '/devices/+/telemetry',
-                'device/+/telemetry',
-                '/device/+/telemetry',
-
-                // Generic 3-level wildcards
-                '+/+/telemetry',
-                '/+/+/telemetry',
-
-                // Alarms & Events (PDF says singular device)
-                'device/+/alarm',
-                '/device/+/alarm',
-                'device/+/event', // PDF said 'event' (singular)
-                '/device/+/event',
-                'device/+/events',
-                '/device/+/events',
-
-                // Fallbacks
-                '+/telemetry',
-                '+/alarm',
-                '+/event',
-                '+/events'
+                'devices/+/telemetry', '/devices/+/telemetry',
+                'device/+/telemetry', '/device/+/telemetry',
+                '+/+/telemetry', '/+/+/telemetry',
+                'device/+/alarm', '/device/+/alarm',
+                'device/+/event', '/device/+/event',
+                'device/+/events', '/device/+/events',
+                '+/telemetry', '+/alarm', '+/event', '+/events'
             ];
 
             mqttClient.subscribe(topics, (err) => {
@@ -112,40 +109,65 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
             });
         });
 
-        mqttClient.on('message', (topic, message) => {
+        mqttClient.on('message', async (topic, message) => {
             const payloadStr = message.toString();
-            console.log(`[MQTT] Received on ${topic}:`, payloadStr); // DEBUG LOG
             const timestamp = Date.now();
 
             try {
-                const payload = JSON.parse(payloadStr);
+                let payload;
+                try {
+                    payload = JSON.parse(payloadStr);
+                } catch (e) {
+                    console.error('[MQTT] JSON Parse Error:', e);
+                    // Fire and forget error logging
+                    db.telemetry.add({
+                        deviceName: 'Invalid',
+                        timestamp,
+                        data: {},
+                        isValid: false,
+                        error: 'JSON Parse Error',
+                        rawMessage: payloadStr
+                    }).catch(err => console.error("Failed to log invalid msg", err));
+                    return;
+                }
 
+                // --- HELPER: Smart Merge for Telemetry ---
+                // Retains old values if new ones are null/undefined
+                const mergeDeviceData = (prevData: any, newData: any) => {
+                    const result = { ...prevData };
+                    Object.keys(newData).forEach(key => {
+                        const val = newData[key];
+                        // If value is valid (not null/undefined), update it.
+                        // If it IS null/undefined, we intentionally do NOT update (keeping prev).
+                        if (val !== null && val !== undefined) {
+                            result[key] = val;
+                        }
+                    });
+                    return result;
+                };
+
+                // 1. Process Telemetry (IMMEDIATE UI UPDATE)
                 if (topic.includes('telemetry')) {
-                    // Expected payload: { "DeviceName": "Inv_1", "data": { ... } }
-                    console.log('[MQTT] Processing Telemetry:', payload); // DEBUG LOG
                     if (payload.DeviceName && payload.data) {
-
                         // Handle Double-Stringified Data
-                        let cleanData = payload.data;
+                        let incomingData = payload.data;
                         if (typeof payload.data === 'string') {
-                            console.log('[MQTT] Detected Stringified Data, parsing...'); // DEBUG LOG
                             try {
-                                cleanData = JSON.parse(payload.data);
+                                incomingData = JSON.parse(payload.data);
                             } catch (e) {
                                 console.error('Failed to parse inner data JSON:', e);
                             }
                         }
 
-                        console.log('[MQTT] Updating State for:', payload.DeviceName, cleanData); // DEBUG LOG
-
                         setTelemetry((prev) => {
-                            const existing = prev[payload.DeviceName]?.data || {};
+                            const existingData = prev[payload.DeviceName]?.data || {};
+                            const mergedData = mergeDeviceData(existingData, incomingData);
+
                             return {
                                 ...prev,
                                 [payload.DeviceName]: {
                                     DeviceName: payload.DeviceName,
-                                    // MERGE new data with existing data
-                                    data: { ...existing, ...cleanData },
+                                    data: mergedData,
                                     timestamp,
                                 },
                             };
@@ -155,119 +177,117 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
                     }
                 }
 
-                // DEBUG: Start capturing ALL valid JSON messages for history check
-                if (payload.DeviceName) {
-                    // Check if it's strictly the expected format or just a flat object?
-                    // For now, if it has DeviceName, we treat it as potentially interesting.
-                    // We aren't storing "Everything" in a global list yet, but let's ensure
-                    // the History tab can see it.
-                    const targetName = payload.DeviceName;
+                // 2. Debug / Fallback for non-standard telemetry topics
+                // Only process if it looks like telemetry and wasn't caught above
+                // AND explicitly has data.
+                else if (payload.DeviceName && payload.data && !topic.includes('alarm') && !topic.includes('event')) {
+                    let incomingData = payload.data;
+                    if (typeof payload.data === 'string') {
+                        try {
+                            incomingData = JSON.parse(payload.data);
+                        } catch (e) {
+                            // If parsing fails, it might be a simple string value, but our state expects an object map.
+                            // We'll log it and proceed with caution, or maybe treat it as a single value if we knew the key?
+                            // For now, we assume it WAS meant to be JSON.
+                            console.error('Failed to parse inner fallback data JSON:', e);
+                        }
+                    }
 
-                    // If it's NOT telemetry (e.g. unknown topic), we might missed it in the `if` above.
-                    // But `setTelemetry` overwrites the latest state.
-                    // We need a way to log HISTORY.
-                    // The `telemetry` state in this context is just the LATEST value.
-                    // The `DeviceDashboard` maintains its own history list?
-                    // No, `DeviceDashboard` uses `deviceData` from `telemetry[mqttDeviceName]`.
-
-                    // Issue: `DeviceDashboard` checks `telemetry[mqttDeviceName]`.
-                    // If the device name is wrong, it won't show up.
-                    // Let's force update telemetry if we see DeviceName, even if topic doesn't match 'telemetry' string exactly
-                    // just for this debug phase.
-                    if (!topic.includes('telemetry') && payload.data) {
+                    // Check if incomingData is actually an object before merging
+                    if (incomingData && typeof incomingData === 'object') {
                         setTelemetry((prev) => {
-                            const existing = prev[payload.DeviceName]?.data || {};
+                            const existingData = prev[payload.DeviceName]?.data || {};
+                            const mergedData = mergeDeviceData(existingData, incomingData);
                             return {
                                 ...prev,
                                 [payload.DeviceName]: {
                                     DeviceName: payload.DeviceName,
-                                    data: { ...existing, ...payload.data },
+                                    data: mergedData,
                                     timestamp,
                                 },
                             };
                         });
                     }
-                } else if (topic.includes('alarm')) {
-                    // Expected payload: Array of alerts [{ "DeviceName": "Inv_1", ... }] based on firmware
-                    // Or single object. Firmware logic: CloudComH_Publish_Device_Alarms_Data adds to buffer, 
-                    // HandleTx constructs "DeviceName":..., "data": { title: ... } actually?
-                    // Re-checking CloudComH.cpp:
-                    // "{\"DeviceName\":\"%s\",\"data\":{%s}}" where data is the list of alarms/telemetry?
-                    // Wait, for Alarms: CloudComH_HandleTx uses MSG_TYPE_ALARMS.
-                    // It constructs: "{\"DeviceName\":\"%s\",\"data\":[%s]}" (if multiple?) 
-                    // Actually the code snippet viewed earlier:
-                    // snprintf(payload, ..., "{\"DeviceName\":\"%s\",\"data\":{%s}}", ... buf->telemetry.c_str());
-                    // It seems 'data' is an object for telemetry.
-                    // For alarms, if it's multiple, usually it's an array or nested objects.
-                    // The provided snippet for Alarms wasn't fully visible in detail but followed the same pattern.
-                    // Note: User said "sending a payload... make tabs for every device".
-                    // If the payload from `site1/{clientid}/alerts` contains multiple devices, 
-                    // it implies the payload might be an ARRAY of device objects OR the "data" object contains keys for multiple devices?
-                    // "CloudComH_HandleTx" sends per-device Name.
-                    // So `site1/{clientid}/alerts` might receive multiple messages, one per device.
-                    // OR one message containing data for multiple devices? 
-                    // "CloudComH" buffers PER DEVICE. Loop: for (int i=0; i<CloudComH_Device_Buffer_Max; i++) ... sends ONE message per device buffer.
-                    // So we receive separate messages: { DeviceName: Inv_1, ... }, { DeviceName: Inv_2, ... }
-                    // So we just accumulate them.
-
-                    // Adjusting parsing to handle both single object and array (just in case)
-                    const incomingAlerts = Array.isArray(payload) ? payload : [payload];
-
-                    // Process each alert object
-                    /* 
-                       Firmware payload for Alarm:
-                       { "DeviceName": "...", "data": ...? } -> Actually CloudComH constructs the whole JSON.
-                       If the wrapper is { DeviceName: ..., data: ... }, we need to extract from data?
-                       OR is the 'data' the alarm itself?
-                       Snippet: "{\"DeviceName\":\"%s\",\"data\":{%s}}"
-                       So for alarms, 'data' might be keyed by something or be a list string?
-                       "CloudComH_Publish_Device_Alarms_Data" adds "title":... to buffer.
-                       If multiple alarms, they are appended in buffer string? 
-                       Usually comma separated? The code does `temp = ...` then `AddToDeviceBuffer`.
-                       If `AddToDeviceBuffer` appends with commas, then `{%s}` makes it a valid JSON object? 
-                       If keys are unique (e.g. alarm IDs), yes. If not, invalid JSON?
-                       Let's assume the payload sent is valid JSON.
-                       We will treat `payload` or `payload.data` as the source of info.
-                    */
-
-                    // Simplified assumption: The payload contains the alert info directly or in .data
-                    // We'll normalize it.
-                    const newAlerts: AlertData[] = [];
-                    incomingAlerts.forEach((item: any) => {
-                        const deviceName = item.DeviceName || "Unknown";
-                        const alertInfo = item.data || item; // Fallback
-
-                        // If alertInfo is the object with title, severity etc.
-                        // We flatten it to AlertData
-                        // Note: If 'data' is a map of alarms, iterate values.
-                        if (alertInfo.title) {
-                            newAlerts.push({
-                                DeviceName: deviceName,
-                                title: alertInfo.title,
-                                type: alertInfo.type,
-                                severity: alertInfo.severity,
-                                status: alertInfo.status,
-                                timestamp
-                            });
-                        } else {
-                            // Try iterating keys if it's a map
-                            Object.keys(alertInfo).forEach(key => {
-                                const val = alertInfo[key];
-                                if (typeof val === 'object' && val.title) {
-                                    newAlerts.push({
-                                        DeviceName: deviceName,
-                                        ...val,
-                                        timestamp
-                                    });
-                                }
-                            });
-                        }
-                    });
-
-                    setAlerts((prev) => [...newAlerts, ...prev].slice(0, 100)); // Keep last 100
                 }
+
+                // 3. Process Alarms & Events (State Update)
+                if (topic.includes('alarm') || topic.includes('event')) {
+                    const processAlerts = (rawPayload: any) => {
+                        const incomingItems = Array.isArray(rawPayload) ? rawPayload : [rawPayload];
+                        const newItems: AlertData[] = [];
+
+                        incomingItems.forEach((item: any) => {
+                            const deviceName = item.DeviceName || "Unknown";
+                            // Flatten structure if needed, or use directly
+                            // Structure from file:
+                            // { "DeviceName": "...", "type": "...", "title": "...", "status": ..., "severity": ... }
+
+                            // Default values for Events if missing
+                            const isEvent = topic.includes('event');
+                            const defaultSeverity = isEvent ? 1 : 3;
+                            const defaultStatus = 1;
+
+                            // If item has direct properties
+                            if (item.title) {
+                                newItems.push({
+                                    DeviceName: deviceName,
+                                    title: item.title,
+                                    type: item.type || (isEvent ? 'Event' : 'Alarm'),
+                                    category: (item.type && ['Inverter protection status', 'SetPointTemp', 'No Set Password'].includes(item.type)) || isEvent ? 'Event' : 'Alarm',
+                                    severity: item.severity ?? defaultSeverity,
+                                    status: item.status ?? defaultStatus,
+                                    timestamp
+                                });
+                            }
+                            // Backward compatibility: if data is nested in 'data'
+                            else if (item.data && item.data.title) {
+                                newItems.push({
+                                    DeviceName: deviceName,
+                                    title: item.data.title,
+                                    type: item.data.type || (isEvent ? 'Event' : 'Alarm'),
+                                    category: isEvent ? 'Event' : 'Alarm',
+                                    severity: item.data.severity ?? defaultSeverity,
+                                    status: item.data.status ?? defaultStatus,
+                                    timestamp
+                                });
+                            }
+                        });
+                        return newItems;
+                    };
+
+                    console.log('[MQTT] Processing Alarm/Event:', topic, JSON.stringify(payload).substring(0, 100));
+                    const newAlerts = processAlerts(payload);
+                    console.log('[MQTT] Parsed Alerts:', newAlerts.length);
+
+                    if (newAlerts.length > 0) {
+                        setAlerts((prev) => [...newAlerts, ...prev].slice(0, 100));
+
+                        // Persist Alarms to DB (Fire and Forget)
+                        newAlerts.forEach(alert => {
+                            db.alarms.add({
+                                deviceName: alert.DeviceName,
+                                timestamp: alert.timestamp,
+                                type: alert.type,
+                                category: alert.category,
+                                data: alert
+                            }).catch(e => console.error("Failed to save alert:", e));
+                        });
+                    }
+                }
+
+                // 4. Validate & Persist Telemetry to DB (BACKGROUND)
+                // Fire and forget to avoid blocking UI thread
+                if (payload.DeviceName && (topic.includes('telemetry') || (!topic.includes('alarm') && !topic.includes('event')))) {
+                    db.telemetry.add({
+                        deviceName: payload.DeviceName,
+                        timestamp,
+                        data: payload,
+                        isValid: true
+                    }).catch(e => console.error("Failed to persist telemetry:", e));
+                }
+
             } catch (e) {
-                console.error('Error parsing MQTT message:', e);
+                console.error('Error processing MQTT message:', e);
             }
         });
 
@@ -299,8 +319,21 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
         };
     }, [brokerUrl]);
 
+    const publishCommand = (deviceName: string, payload: any) => {
+        if (client && isConnected) {
+            const topic = `device/${deviceName}/rpc`;
+            const message = JSON.stringify(payload);
+            console.log(`[MQTT] Publishing Command to ${topic}:`, message);
+            client.publish(topic, message, { qos: 1 }, (err) => {
+                if (err) console.error('[MQTT] Command Publish Error:', err);
+            });
+        } else {
+            console.warn('[MQTT] Cannot publish command: Client not connected');
+        }
+    };
+
     return (
-        <MQTTContext.Provider value={{ client, isConnected, connectionError, telemetry, alerts }}>
+        <MQTTContext.Provider value={{ client, isConnected, connectionError, telemetry, alerts, publishCommand }}>
             {children}
         </MQTTContext.Provider>
     );

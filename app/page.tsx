@@ -4,12 +4,14 @@ import React, { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMQTT } from '@/lib/mqtt-context';
 import { useConfig } from '@/lib/config-context';
+import { useDevices } from '@/lib/device-context';
 import { Activity, Zap, Droplets, Server, Wifi, AlertTriangle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 
 export default function Dashboard() {
     const { deviceTypes, getCustomName } = useConfig();
+    const { devices: activeDevices } = useDevices();
     const { telemetry, isConnected } = useMQTT();
     const router = useRouter();
 
@@ -29,9 +31,11 @@ export default function Dashboard() {
             // until we have a true device registry.
             // For the checklist, we'll iterate up to defaultCount.
 
-            for (let i = 1; i <= type.defaultCount; i++) {
+            const typeDevices = activeDevices[type.id] || [];
+
+            typeDevices.forEach(deviceId => {
                 totalDevices++;
-                const id = i.toString();
+                const id = deviceId.toString();
                 const mqttName = `${type.deviceNamePrefix || type.singularLabel.replace(' ', '')}_${id}`;
                 const data = telemetry[mqttName];
                 const lastSeen = data ? Date.now() - data.timestamp : Infinity;
@@ -46,13 +50,19 @@ export default function Dashboard() {
                 // We assume the SECOND attribute is the "Main" one for the Overview (Power, Flow, etc.)
                 // Index 0 is usually Frequency/Voltage (less important for summary)
                 // Index 1 is usually Power/Flow Rate (more important)
-                const primaryAttr = type.attributes[1] || type.attributes[0];
+                // Select Primary Metric: Look for Power or Flow Rate, otherwise default to first
+                const primaryAttr = type.attributes.find(a =>
+                    a.key.includes('power') ||
+                    a.key.includes('flow_rate') ||
+                    a.iconStr === 'Zap' ||
+                    a.iconStr === 'GaugeIcon'
+                ) || type.attributes[0];
 
                 if (primaryAttr) {
                     const key = primaryAttr.key;
                     const val = data?.data?.[key];
-                    // Handle object value format {value: ..., id: ...}
-                    const rawValue = (typeof val === 'object' && val !== null && 'value' in val) ? val.value : val;
+                    // Value is normalized by Zod
+                    const rawValue = val;
 
                     mainMetric = Number(rawValue || 0);
                     unit = primaryAttr.unit || '';
@@ -76,11 +86,11 @@ export default function Dashboard() {
                     unit,
                     icon: type.icon
                 });
-            }
+            });
         });
 
         return { totalDevices, onlineDevices, totalPower, totalFlow, devices };
-    }, [deviceTypes, telemetry, getCustomName]);
+    }, [deviceTypes, telemetry, getCustomName, activeDevices]);
 
     return (
         <div className="max-w-7xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700 p-6 md:p-12">

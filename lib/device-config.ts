@@ -59,7 +59,8 @@ export const DEVICE_TYPES: DeviceType[] = [
         icon: Activity,
         defaultCount: 5, // PDF says 1-5
         attributes: [
-            { key: 'em_voltage_a', label: 'Voltage (A)', unit: 'V', iconStr: 'Zap' },
+            { key: 'total_active_power', label: 'Active Power', unit: 'kW', iconStr: 'Zap' },
+            { key: 'em_voltage_a', label: 'Voltage (A)', unit: 'V', iconStr: 'Activity' },
             { key: 'em_current_a', label: 'Current (A)', unit: 'A', iconStr: 'Activity' },
             { key: 'em_power_factor', label: 'Power Factor', unit: '', iconStr: 'Activity' },
             { key: 'em_frequency', label: 'Frequency', unit: 'Hz', iconStr: 'Activity' },

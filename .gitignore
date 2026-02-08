@@ -1,29 +1,55 @@
-# Dependency directories
-node_modules/
-.pnp
+# dependencies
+/node_modules
+/.pnp
 .pnp.js
+.yarn/install-state.gz
 
-# Testing
-coverage/
+# testing
+/coverage
+/.playwright-mcp
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache
 
-# Next.js
-.next/
-out/
-build/
-dist/
+# next.js
+/.next/
+/out/
 
-# Misc
+# production
+/build
+/dist
+
+# misc
 .DS_Store
 *.pem
-
-# Debug
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.eslintcache
+.stylelintcache
 
-# Local env files
+# local env files
 .env*.local
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# Vercel
+# vercel
 .vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# ide
+.vscode/
+.idea/
+*.swp
+*.swo
+.project
+.classpath
+.settings/

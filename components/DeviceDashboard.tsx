@@ -69,10 +69,12 @@ export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
     useEffect(() => {
         if (deviceData) {
             setGraphData(prev => {
-                let val = 0;
-                if (type === 'inv') val = Number(deviceData.data?.pump_power?.value || 0);
-                else if (type === 'fm') val = Number(deviceData.data?.water_pumped_flow_rate_per_hour?.value || 0);
-                else if (type === 'em') val = Number(deviceData.data?.total_active_power?.value || 0);
+                let rawVal: any = 0;
+                if (type === 'inv') rawVal = deviceData.data?.pump_power;
+                else if (type === 'fm') rawVal = deviceData.data?.water_pumped_flow_rate_per_hour;
+                else if (type === 'em') rawVal = deviceData.data?.total_active_power;
+
+                const val = Number(rawVal || 0);
 
                 const newData = {
                     time: new Date(deviceData.timestamp).toLocaleTimeString(),
@@ -265,10 +267,8 @@ export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
                     {/* Telemetry Cards - Dynamic Rendering */}
                     {deviceType?.attributes.map((attr) => {
                         const val = deviceData?.data?.[attr.key];
-                        // Handle value being an object {value: ..., id: ...} or direct scalar
-                        const displayVal = (typeof val === 'object' && val !== null && 'value' in val)
-                            ? val.value
-                            : val;
+                        // Value is already normalized by Zod in context
+                        const displayVal = val;
 
                         // Icon mapping
                         const IconComp = attr.iconStr === 'Zap' ? Zap

@@ -1,10 +1,11 @@
 
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useMQTT } from "@/lib/mqtt-context";
+import { useMQTTConnection } from "@/lib/mqtt-context";
+import { useDevices } from "@/lib/device-context";
 import { Activity, ChevronDown, ChevronRight, Plus, Trash2, Settings, Sun, Moon, LogOut } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -15,56 +16,15 @@ export const Sidebar = () => {
     const pathname = usePathname();
     const { deviceTypes } = useConfig();
     const { theme, setTheme } = useTheme();
-    const { isConnected, connectionError } = useMQTT();
+    const { isConnected, connectionError } = useMQTTConnection();
 
-    // Initialize state dynamically based on config
-    // Note: detailed state management might need refactoring if types change often, 
-    // but for now we initialize based on what's available.
-    const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-    const [devices, setDevices] = useState<Record<string, number[]>>({});
-
-    // Effect to sync state when deviceTypes change (e.g. new category added)
-    useEffect(() => {
-        setCollapsed(prev => {
-            const next = { ...prev };
-            deviceTypes.forEach(t => {
-                if (next[t.id] === undefined) next[t.id] = false;
-            });
-            return next;
-        });
-
-        setDevices(prev => {
-            const next = { ...prev };
-            deviceTypes.forEach(t => {
-                if (!next[t.id]) next[t.id] = Array.from({ length: t.defaultCount }, (_, i) => i + 1);
-            });
-            return next;
-        });
-    }, [deviceTypes]);
+    const { devices, collapsed, addDevice, removeDevice, toggleSection } = useDevices();
 
     const isActive = (path: string) => path === '/' ? pathname === '/' : pathname.startsWith(path);
 
-    const toggleSection = (sectionId: string) => {
-        setCollapsed(prev => ({ ...prev, [sectionId]: !prev[sectionId] }));
-    };
-
-    const addDevice = (typeId: string) => {
-        setDevices(prev => {
-            const currentIds = prev[typeId] || [];
-            const newId = currentIds.length > 0 ? Math.max(...currentIds) + 1 : 1;
-            return {
-                ...prev,
-                [typeId]: [...currentIds, newId]
-            };
-        });
-    };
-
-    const removeDevice = (e: React.MouseEvent, typeId: string, id: number) => {
+    const handleRemoveDevice = (e: React.MouseEvent, typeId: string, id: number) => {
         e.preventDefault();
-        setDevices(prev => ({
-            ...prev,
-            [typeId]: prev[typeId].filter(deviceId => deviceId !== id)
-        }));
+        removeDevice(typeId, id);
     };
 
     const NavItem = ({ href, icon: Icon, label, onDelete }: { href: string; icon: any; label: string; onDelete?: (e: React.MouseEvent) => void }) => (
@@ -154,7 +114,7 @@ export const Sidebar = () => {
                                     href={`/device/${type.id}/${id}`}
                                     icon={type.icon}
                                     label={`${type.singularLabel} ${id}`}
-                                    onDelete={(e) => removeDevice(e, type.id, id)}
+                                    onDelete={(e) => handleRemoveDevice(e, type.id, id)}
                                 />
                             ))}
                         </div>

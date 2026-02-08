@@ -1,9 +1,11 @@
+
 "use client";
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, ChevronDown, ChevronRight, Plus, Trash2, Settings, Sun, Moon } from 'lucide-react';
+import { useMQTT } from "@/lib/mqtt-context";
+import { Activity, ChevronDown, ChevronRight, Plus, Trash2, Settings, Sun, Moon, LogOut } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useConfig } from '@/lib/config-context';
@@ -13,6 +15,7 @@ export const Sidebar = () => {
     const pathname = usePathname();
     const { deviceTypes } = useConfig();
     const { theme, setTheme } = useTheme();
+    const { isConnected, connectionError } = useMQTT();
 
     // Initialize state dynamically based on config
     // Note: detailed state management might need refactoring if types change often, 
@@ -107,7 +110,7 @@ export const Sidebar = () => {
             <button
                 onClick={onAdd}
                 className="p-1 text-gray-600 hover:text-white hover:bg-white/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                title={`Add ${title}`}
+                title={`Add ${title} `}
             >
                 <Plus size={14} />
             </button>
@@ -183,13 +186,22 @@ export const Sidebar = () => {
                     </span>
                 </button>
 
-                <div className="px-4 py-3 rounded-xl bg-gradient-to-r from-primary/10 to-transparent border border-gray-200 dark:border-white/5 mt-4">
-                    <div className="flex items-center gap-3">
-                        <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                        <span className="text-sm font-medium text-green-600 dark:text-green-400">System Online</span>
+                <div className={`px-4 py-3 rounded-xl border border-gray-200 dark:border-white/5 mt-4 transition-colors ${isConnected ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                            <span className={`text-sm font-medium ${isConnected ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                {isConnected ? 'Broker Connected' : 'Disconnected'}
+                            </span>
+                        </div>
                     </div>
+                    {connectionError && !isConnected && (
+                        <div className="mt-1 text-[10px] text-red-500/80 break-words px-1">
+                            {connectionError}
+                        </div>
+                    )}
                 </div>
             </div>
-        </aside>
+        </aside >
     );
 };

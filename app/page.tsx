@@ -39,22 +39,30 @@ export default function Dashboard() {
 
                 if (isOnline) onlineDevices++;
 
-                // Extract key metrics
+                // Extract key metrics dynamically based on config
                 let mainMetric = 0;
                 let unit = '';
 
-                if (type.id === 'inv') {
-                    mainMetric = Number(data?.data?.pump_power?.value || 0);
-                    totalPower += mainMetric;
-                    unit = 'kW';
-                } else if (type.id === 'fm') {
-                    mainMetric = Number(data?.data?.water_pumped_flow_rate_per_hour?.value || 0);
-                    totalFlow += mainMetric;
-                    unit = 'm3/h';
-                } else if (type.id === 'em') {
-                    mainMetric = Number(data?.data?.total_active_power?.value || 0);
-                    totalPower += mainMetric; // Add EM power? Or separate? Let's add for now.
-                    unit = 'kW';
+                // We assume the SECOND attribute is the "Main" one for the Overview (Power, Flow, etc.)
+                // Index 0 is usually Frequency/Voltage (less important for summary)
+                // Index 1 is usually Power/Flow Rate (more important)
+                const primaryAttr = type.attributes[1] || type.attributes[0];
+
+                if (primaryAttr) {
+                    const key = primaryAttr.key;
+                    const val = data?.data?.[key];
+                    // Handle object value format {value: ..., id: ...}
+                    const rawValue = (typeof val === 'object' && val !== null && 'value' in val) ? val.value : val;
+
+                    mainMetric = Number(rawValue || 0);
+                    unit = primaryAttr.unit || '';
+
+                    // Accumulate totals based on type
+                    if (type.id === 'inv' || type.id === 'em') {
+                        totalPower += mainMetric;
+                    } else if (type.id === 'fm') {
+                        totalFlow += mainMetric;
+                    }
                 }
 
                 devices.push({
@@ -181,6 +189,22 @@ export default function Dashboard() {
                             ))}
                         </tbody>
                     </table>
+                </div>
+            </div>
+
+            {/* DEBUG: Temporary Device List dump to verify names */}
+            <div className="p-4 border border-yellow-500/20 bg-yellow-500/5 rounded-lg">
+                <h3 className="text-yellow-500 font-mono text-xs uppercase tracking-wider mb-2">Debug: Known Devices in Memory</h3>
+                <div className="flex flex-wrap gap-2">
+                    {Object.keys(telemetry).length === 0 ? (
+                        <span className="text-gray-500 text-xs italic">No telemetry data received yet.</span>
+                    ) : (
+                        Object.keys(telemetry).map(key => (
+                            <span key={key} className="px-2 py-1 bg-black/20 rounded text-xs font-mono text-gray-400 border border-white/10">
+                                {key} <span className="opacity-50">({new Date(telemetry[key].timestamp).toLocaleTimeString()})</span>
+                            </span>
+                        ))
+                    )}
                 </div>
             </div>
         </div>

@@ -3,6 +3,8 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import mqtt, { MqttClient } from 'mqtt';
 
+import { useConfig } from './config-context';
+
 // Types derived from firmware analysis
 export interface TelemetryData {
     [key: string]: {
@@ -29,6 +31,7 @@ export interface AlertData {
 interface MQTTContextType {
     client: MqttClient | null;
     isConnected: boolean;
+    connectionError: string | null;
     telemetry: Record<string, DeviceTelemetry>; // Keyed by DeviceName
     alerts: AlertData[];
 }
@@ -39,7 +42,7 @@ const MQTTContext = createContext<MQTTContextType | undefined>(undefined);
 // Configuration - In a real app, these might be env vars
 // Note: User specified broker.dev.kuido.io:1883 (TCP). Browser requires WSS.
 // Assuming WSS port 8083 or 8084 for Kuido, or using EMQX public for demo with same topic structure.
-const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
+// const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
 
 // The ClientID of the device/gateway you want to monitor.
 // Use '+' to monitor ALL devices broadcasting to this broker.
@@ -49,14 +52,16 @@ const TARGET_CLIENT_ID = '+';
 // const BROKER_URL = 'wss://broker.dev.kuido.io:8083/mqtt'; // Uncomment if Kuido supports WSS
 
 export const MQTTProvider = ({ children }: { children: ReactNode }) => {
+    const { brokerUrl } = useConfig();
     const [client, setClient] = useState<MqttClient | null>(null);
     const [isConnected, setIsConnected] = useState(false);
+    const [connectionError, setConnectionError] = useState<string | null>(null);
     const [telemetry, setTelemetry] = useState<Record<string, DeviceTelemetry>>({});
     const [alerts, setAlerts] = useState<AlertData[]>([]);
 
     useEffect(() => {
-        console.log('Connecting to MQTT broker...', BROKER_URL);
-        const mqttClient = mqtt.connect(BROKER_URL, {
+        console.log('Connecting to MQTT broker...', brokerUrl);
+        const mqttClient = mqtt.connect(brokerUrl, {
             clientId: `dashboard_${Math.random().toString(16).slice(2, 10)}`,
             clean: true,
             reconnectPeriod: 5000,
@@ -65,14 +70,40 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
         mqttClient.on('connect', () => {
             console.log('Connected to MQTT Broker');
             setIsConnected(true);
+            setConnectionError(null);
 
             // Subscribe to topics based on Kuido/Vodafone Platform structure
             // Structure: /device/{clientID}/{topic_type}
 
+            // Subscribe to topics
+            // We subscribe to multiple patterns to support different device configurations,
+            // including those with leading slashes which are common in some firmware.
             const topics = [
-                `/device/${TARGET_CLIENT_ID}/telemetry`,
-                `/device/${TARGET_CLIENT_ID}/alarm`,
-                `/device/${TARGET_CLIENT_ID}/events`
+                // PDF Specification matches: devices/<device_id>/telemetry (Plural)
+                // Alarms/Events in PDF say: device/<device_id>/alarm (Singular)
+                // We subscribe to BOTH and generic wildcards to be safe.
+                'devices/+/telemetry',
+                '/devices/+/telemetry',
+                'device/+/telemetry',
+                '/device/+/telemetry',
+
+                // Generic 3-level wildcards
+                '+/+/telemetry',
+                '/+/+/telemetry',
+
+                // Alarms & Events (PDF says singular device)
+                'device/+/alarm',
+                '/device/+/alarm',
+                'device/+/event', // PDF said 'event' (singular)
+                '/device/+/event',
+                'device/+/events',
+                '/device/+/events',
+
+                // Fallbacks
+                '+/telemetry',
+                '+/alarm',
+                '+/event',
+                '+/events'
             ];
 
             mqttClient.subscribe(topics, (err) => {
@@ -83,6 +114,7 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
 
         mqttClient.on('message', (topic, message) => {
             const payloadStr = message.toString();
+            console.log(`[MQTT] Received on ${topic}:`, payloadStr); // DEBUG LOG
             const timestamp = Date.now();
 
             try {
@@ -90,15 +122,70 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
 
                 if (topic.includes('telemetry')) {
                     // Expected payload: { "DeviceName": "Inv_1", "data": { ... } }
+                    console.log('[MQTT] Processing Telemetry:', payload); // DEBUG LOG
                     if (payload.DeviceName && payload.data) {
-                        setTelemetry((prev) => ({
-                            ...prev,
-                            [payload.DeviceName]: {
-                                DeviceName: payload.DeviceName,
-                                data: payload.data,
-                                timestamp,
-                            },
-                        }));
+
+                        // Handle Double-Stringified Data
+                        let cleanData = payload.data;
+                        if (typeof payload.data === 'string') {
+                            console.log('[MQTT] Detected Stringified Data, parsing...'); // DEBUG LOG
+                            try {
+                                cleanData = JSON.parse(payload.data);
+                            } catch (e) {
+                                console.error('Failed to parse inner data JSON:', e);
+                            }
+                        }
+
+                        console.log('[MQTT] Updating State for:', payload.DeviceName, cleanData); // DEBUG LOG
+
+                        setTelemetry((prev) => {
+                            const existing = prev[payload.DeviceName]?.data || {};
+                            return {
+                                ...prev,
+                                [payload.DeviceName]: {
+                                    DeviceName: payload.DeviceName,
+                                    // MERGE new data with existing data
+                                    data: { ...existing, ...cleanData },
+                                    timestamp,
+                                },
+                            };
+                        });
+                    } else {
+                        console.warn('[MQTT] Telemetry missing DeviceName or data:', payload);
+                    }
+                }
+
+                // DEBUG: Start capturing ALL valid JSON messages for history check
+                if (payload.DeviceName) {
+                    // Check if it's strictly the expected format or just a flat object?
+                    // For now, if it has DeviceName, we treat it as potentially interesting.
+                    // We aren't storing "Everything" in a global list yet, but let's ensure
+                    // the History tab can see it.
+                    const targetName = payload.DeviceName;
+
+                    // If it's NOT telemetry (e.g. unknown topic), we might missed it in the `if` above.
+                    // But `setTelemetry` overwrites the latest state.
+                    // We need a way to log HISTORY.
+                    // The `telemetry` state in this context is just the LATEST value.
+                    // The `DeviceDashboard` maintains its own history list?
+                    // No, `DeviceDashboard` uses `deviceData` from `telemetry[mqttDeviceName]`.
+
+                    // Issue: `DeviceDashboard` checks `telemetry[mqttDeviceName]`.
+                    // If the device name is wrong, it won't show up.
+                    // Let's force update telemetry if we see DeviceName, even if topic doesn't match 'telemetry' string exactly
+                    // just for this debug phase.
+                    if (!topic.includes('telemetry') && payload.data) {
+                        setTelemetry((prev) => {
+                            const existing = prev[payload.DeviceName]?.data || {};
+                            return {
+                                ...prev,
+                                [payload.DeviceName]: {
+                                    DeviceName: payload.DeviceName,
+                                    data: { ...existing, ...payload.data },
+                                    timestamp,
+                                },
+                            };
+                        });
                     }
                 } else if (topic.includes('alarm')) {
                     // Expected payload: Array of alerts [{ "DeviceName": "Inv_1", ... }] based on firmware
@@ -186,7 +273,19 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
 
         mqttClient.on('error', (err) => {
             console.error('MQTT Connection Error:', err);
+            setConnectionError(err.message || 'Connection Error');
             setIsConnected(false);
+        });
+
+        mqttClient.on('offline', () => {
+            console.log('MQTT Client Offline');
+            setIsConnected(false);
+            setConnectionError('Offline / Reconnecting...');
+        });
+
+        mqttClient.on('reconnect', () => {
+            console.log('Reconnecting...');
+            setConnectionError('Reconnecting...');
         });
 
         mqttClient.on('close', () => {
@@ -198,10 +297,10 @@ export const MQTTProvider = ({ children }: { children: ReactNode }) => {
         return () => {
             mqttClient.end();
         };
-    }, []);
+    }, [brokerUrl]);
 
     return (
-        <MQTTContext.Provider value={{ client, isConnected, telemetry, alerts }}>
+        <MQTTContext.Provider value={{ client, isConnected, connectionError, telemetry, alerts }}>
             {children}
         </MQTTContext.Provider>
     );

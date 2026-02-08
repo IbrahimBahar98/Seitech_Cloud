@@ -119,30 +119,36 @@ export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
 
         return (
             <div className={clsx(
-                "glass-panel p-6 relative group transition-all duration-300 dark:bg-white/5 bg-white shadow-sm border border-gray-200 dark:border-white/10",
+                "glass-panel p-6 relative group transition-all duration-300 dark:bg-white/5 bg-white shadow-sm border border-gray-200 dark:border-white/10 overflow-hidden",
                 editMode && visibleCards[id] === false ? "opacity-40 grayscale" : "hover:border-primary/50"
             )}>
                 {editMode && (
                     <button
                         onClick={() => toggleCard(id)}
-                        className="absolute top-2 right-2 p-1.5 rounded-full bg-black/10 dark:bg-white/10 hover:bg-black/20 dark:hover:bg-white/20 text-gray-500 dark:text-white z-10"
+                        className="absolute top-2 right-2 p-1.5 rounded-full bg-red-500/10 hover:bg-red-500/20 text-red-500 hover:text-red-700 z-10 transition-colors"
+                        title={visibleCards[id] !== false ? "Hide Card" : "Show Card"}
                     >
-                        {visibleCards[id] !== false ? <X size={14} /> : <div className="w-3.5 h-3.5 rounded-full border border-gray-400 dark:border-white" />}
+                        {visibleCards[id] !== false ? <X size={14} /> : <Plus size={14} />}
                     </button>
                 )}
 
                 <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2.5 rounded-xl bg-blue-500/10 text-primary">
+                    <div className="p-2.5 rounded-xl bg-blue-500/10 text-primary shrink-0">
                         <Icon size={20} />
                     </div>
-                    <h3 className="text-gray-500 dark:text-gray-400 font-medium text-sm">{title}</h3>
+                    <h3 className="text-gray-500 dark:text-gray-400 font-medium text-sm truncate" title={title}>
+                        {title}
+                    </h3>
                 </div>
 
-                <div className="flex items-end gap-2">
-                    <span className="text-3xl font-bold text-gray-900 dark:text-white tracking-tight">
+                <div className="flex items-end gap-2 w-full">
+                    <span className={clsx(
+                        "font-bold text-gray-900 dark:text-white tracking-tight truncate",
+                        String(value).length > 8 ? "text-xl" : "text-3xl"
+                    )} title={String(value)}>
                         {value ?? '--'}
                     </span>
-                    <span className="text-sm text-gray-500 mb-1.5 font-medium">{unit}</span>
+                    <span className="text-sm text-gray-500 mb-1.5 font-medium shrink-0">{unit}</span>
                 </div>
             </div>
         );
@@ -179,7 +185,7 @@ export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
                             title="Click to rename"
                         >
                             {displayName}
-                            <span className="opacity-0 group-hover:opacity-100 text-xs text-gray-500 font-normal border border-gray-500/30 px-2 py-0.5 rounded">
+                            <span className="text-xs text-gray-500 font-normal border border-gray-500/30 px-2 py-0.5 rounded ml-2">
                                 {mqttDeviceName}
                             </span>
                         </h1>
@@ -224,7 +230,7 @@ export const DeviceDashboard = ({ type, id }: DeviceDashboardProps) => {
                 >
                     <div className="flex items-center gap-2">
                         <Terminal size={16} />
-                        TELEMETRIES
+                        HISTORY
                     </div>
                 </button>
                 <button
